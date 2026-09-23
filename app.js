@@ -198,9 +198,12 @@ function positionAgeText(iso){
 }
 const MEMBER_COLORS=['#f5cf35','#2f80ed','#e05252','#31a36b','#9b59b6','#f2994a','#00a6a6','#e85aad'];
 function memberColor(userId){
-  const text=String(userId||'');
+  const id=String(userId||'');
+  const members=groupState.members||[];
+  const idx=members.findIndex(m=>m.userId===id);
+  if(idx>=0)return MEMBER_COLORS[idx%MEMBER_COLORS.length];
   let hash=2166136261;
-  for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  for(let i=0;i<id.length;i++){hash^=id.charCodeAt(i);hash=Math.imul(hash,16777619);}
   return MEMBER_COLORS[(hash>>>0)%MEMBER_COLORS.length];
 }
 function memberStatus(p){
@@ -280,9 +283,9 @@ async function toggleSharing(){
     groupState.sharing=false;saveGroup();stopGps();
     const prev=(groupState.positions||[]).find(p=>p.user_id===groupState.userId);
     if(prev){const stopped={...prev,sharing_enabled:false,recorded_at:new Date().toISOString()};upsertLocalPosition(stopped);try{await publishPosition(stopped,true)}catch(e){console.error(e)}}
-    renderGroup();showMap();return;
+    renderGroup();return;
   }
-  groupState.sharing=true;saveGroup();renderGroup();startGps();showMap();
+  groupState.sharing=true;saveGroup();renderGroup();startGps();
 }
 async function onPosition(pos){
   if(!groupState.sharing||!groupState.group||!groupState.userId)return;
@@ -296,14 +299,63 @@ async function publishPosition(p,force){
 }
 function geoError(e){alert('No se pudo obtener la ubicación: '+(e?.message||'comprueba los permisos de ubicación.'))}
 
+let routeLayers={gr:L.layerGroup(),santiago:L.layerGroup(),greenways:L.layerGroup()};
+let routeLoaded={gr:false,santiago:false,greenways:false};
+let routeLoadTimer=null;
+const OVERPASS_URL='https://overpass-api.de/api/interpreter';
+function routeEscape(v){return String(v||'').replace(/[^a-zA-Z0-9_ -]/g,'').slice(0,120)}
+function routeRelationMatches(rel,kind){
+  const t=rel.tags||{}; const route=t.route||''; const network=t.network||''; const name=(t.name||'')+' '+(t.ref||'')+' '+(t.operator||'');
+  if(kind==='gr') return network==='rwn' || /(^|\s)GR[- ]?\d+/i.test(name);
+  if(kind==='santiago') return route==='pilgrimage' || /santiago|camino de santiago|jacobe/i.test(name);
+  if(kind==='greenways') return /via verde|vía verde|vias verdes|vías verdes/i.test(name);
+  return false;
+}
+function routeColor(kind){return kind==='gr'?'#d97706':kind==='santiago'?'#7c3aed':'#15803d'}
+async function loadOsmRoutes(kind){
+  if(routeLoaded[kind]||!map)return;
+  const b=map.getBounds(); const s=b.getSouth().toFixed(5),w=b.getWest().toFixed(5),n=b.getNorth().toFixed(5),e=b.getEast().toFixed(5);
+  const bbox=`(${s},${w},${n},${e})`;
+  let selectors=[];
+  if(kind==='gr') selectors=['relation[route=hiking][network=rwn]','relation[route=foot][network=rwn]','relation[network=rwn][ref~"^GR",i]'];
+  else if(kind==='santiago') selectors=['relation[route=pilgrimage]','relation[route=foot][name~"Santiago|Camino de Santiago|Jacobe",i]'];
+  else selectors=['relation[name~"V[ií]a Verde|V[ií]as Verdes",i]','relation[operator~"V[ií]a Verde|V[ií]as Verdes",i]'];
+  const q=`[out:json][timeout:25];(${selectors.map(x=>x+bbox).join(';')});out body;>;out geom;`;
+  const loading=document.getElementById('routeLoading'); if(loading)loading.textContent='Cargando rutas…';
+  try{
+    const res=await fetch(OVERPASS_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:q});
+    if(!res.ok)throw new Error('Overpass '+res.status);
+    const data=await res.json(); const els=data.elements||[]; const ways=new Map(els.filter(x=>x.type==='way').map(x=>[x.id,x]));
+    const rels=els.filter(x=>x.type==='relation'&&routeRelationMatches(x,kind)); const layer=routeLayers[kind]; layer.clearLayers();
+    for(const rel of rels){
+      const seen=new Set();
+      for(const m of (rel.members||[])){ if(m.type!=='way'||seen.has(m.ref))continue; const way=ways.get(m.ref); if(!way?.geometry?.length)continue; seen.add(m.ref);
+        const coords=way.geometry.map(g=>[g.lat,g.lon]); const line=L.polyline(coords,{color:routeColor(kind),weight:4,opacity:.78});
+        line.bindTooltip(escapeHtml(rel.tags?.name||rel.tags?.ref||'Ruta OSM'),{sticky:true}); line.addTo(layer);
+      }
+    }
+    if(!map.hasLayer(layer))layer.addTo(map); routeLoaded[kind]=true;
+    if(loading)loading.textContent=rels.length?`${rels.length} rutas cargadas`:'Sin rutas en esta zona';
+  }catch(err){console.warn('No se pudieron cargar rutas OSM',kind,err);if(loading)loading.textContent='No se pudieron cargar las rutas';}
+}
+function initOsmRouteControls(){
+  const mapWrap=document.getElementById('mapWrap');
+  [['routeGr','gr'],['routeSantiago','santiago'],['routeGreenways','greenways']].forEach(([id,kind])=>{
+    const el=document.getElementById(id); if(!el)return; el.onchange=()=>{ if(el.checked){loadOsmRoutes(kind)} else if(map.hasLayer(routeLayers[kind]))map.removeLayer(routeLayers[kind]); };
+  });
+}
+function loadVisibleOsmRoutes(){
+  ['gr','santiago','greenways'].forEach(k=>{const id=k==='gr'?'routeGr':k==='santiago'?'routeSantiago':'routeGreenways';if(document.getElementById(id)?.checked&&!routeLoaded[k])loadOsmRoutes(k)});
+}
 function initMap(){
   if(map)return;
   map=L.map('map',{zoomControl:false}).setView([43.36,-8.41],10);
   L.control.zoom({position:'bottomright'}).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
   window._map=map;
+  initOsmRouteControls();
 }
-function markerIcon(userId,isMe=false){const color=memberColor(userId);return L.divIcon({className:'ultreia-marker',html:`<div class="marker-pin ${isMe?'me':''}" style="--member-color:${color}">${isMe?'●':'👤'}</div>`,iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-16]})}
+function markerIcon(userId,isMe=false){const color=memberColor(userId);return L.divIcon({className:'ultreia-marker',html:`<div class="marker-pin ${isMe?'me':''}" style="--member-color:${color};background:${color}!important">${isMe?'●':'👤'}</div>`,iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-16]})}
 function drawOwn(p,center=true){
   initMap();
   if(!userMarker){userMarker=L.marker([p.latitude,p.longitude],{icon:markerIcon(groupState.userId,true)}).addTo(map).bindPopup(`<strong>${escapeHtml(groupState.alias||'Yo')}</strong><br>Mi posición`)}else userMarker.setLatLng([p.latitude,p.longitude]);
@@ -343,7 +395,7 @@ function showMap(){
   document.getElementById('groupList').style.display='none';document.getElementById('mapWrap').style.display='block';
   initMap();renderGroupMarkers();
   const me=(groupState.positions||[]).find(p=>p.user_id===groupState.userId);if(me)drawOwn(me,false);
-  fitGroup();updateMapCard();setTimeout(()=>map.invalidateSize(),80);
+  fitGroup();updateMapCard();setTimeout(()=>{map.invalidateSize();loadVisibleOsmRoutes()},120);
 }
 function showList(){document.getElementById('mapWrap').style.display='none';document.getElementById('groupList').style.display='block'}
 function updateMapCard(){
@@ -357,7 +409,7 @@ document.getElementById('groupMapBtn').onclick=showMap;
 document.getElementById('groupListBtn').onclick=showList;
 document.getElementById('locateBtn').onclick=()=>{const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);if(p)drawOwn(p,true);else navigator.geolocation?.getCurrentPosition(onPosition,geoError,{enableHighAccuracy:true})};
 document.getElementById('fitGroupBtn').onclick=()=>{mapFollowMode='all';fitGroup()};
-document.getElementById('refreshGroupBtn').onclick=()=>safeAction(loadGroupFromSupabase);
+document.getElementById('refreshGroupBtn').onclick=()=>safeAction(async()=>{await loadGroupFromSupabase(); if(map){Object.keys(routeLoaded).forEach(k=>routeLoaded[k]=false); Object.values(routeLayers).forEach(l=>l.clearLayers()); loadVisibleOsmRoutes();}});
 document.getElementById('createGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('createAlias').value.trim(),name=document.getElementById('createGroupName').value.trim();if(!alias||!name)return;const btn=e.submitter;btn.disabled=true;try{await createGroup(alias,name);document.getElementById('createGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
 document.getElementById('joinGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('joinAlias').value.trim(),code=document.getElementById('joinCode').value.trim().toUpperCase();if(!alias||!code)return;const btn=e.submitter;btn.disabled=true;try{await joinGroup(alias,code);document.getElementById('joinGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
 document.getElementById('createGroupBtn').onclick=()=>{document.getElementById('groupChoiceDialog').close();document.getElementById('createGroupDialog').showModal()};
