@@ -7,12 +7,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 const HOME='homeView', EXP='expenseView', GROUP='groupView';
 let currentView=HOME;
+let mapFollowMode='all';
 function showView(id){
   currentView=id;
+  try{sessionStorage.setItem('ultreia-last-view',id)}catch{}
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   if(id===GROUP){ renderGroup(); setTimeout(()=>{ if(window._map) window._map.invalidateSize(); },150); }
   if(id===EXP) renderExpense();
+// Si ya perteneces a un grupo, al volver a abrir la PWA retomamos directamente el seguimiento.
+if(groupState.group){ showView(GROUP); initGroup(); }
 }
 document.getElementById('goExpenses').onclick=()=>showView(EXP);
 document.getElementById('goGroup').onclick=async()=>{showView(GROUP); await initGroup();};
@@ -149,6 +153,22 @@ async function connectRealtime(groupId){
 async function stopRealtime(){if(realtimeChannel){await supabase.removeChannel(realtimeChannel);realtimeChannel=null}groupState.realtimeConnected=false}
 function upsertLocalPosition(pos){const arr=groupState.positions||[];const i=arr.findIndex(x=>x.user_id===pos.user_id);if(i<0)arr.push(pos);else arr[i]=pos;groupState.positions=arr;saveGroup()}
 
+function positionAgeText(iso){
+  if(!iso) return 'Sin posición';
+  const sec=Math.max(0,Math.round((Date.now()-new Date(iso).getTime())/1000));
+  if(sec<60) return `hace ${sec} s`;
+  const min=Math.round(sec/60);
+  if(min<60) return `hace ${min} min`;
+  const h=Math.round(min/60);
+  return `hace ${h} h`;
+}
+function memberStatus(p){
+  if(!p) return {text:'Sin posición',cls:'none'};
+  if(!p.sharing_enabled) return {text:'Ubicación parada',cls:'off'};
+  const sec=Math.max(0,Math.round((Date.now()-new Date(p.recorded_at).getTime())/1000));
+  if(sec<90) return {text:`Ubicación activa · ${positionAgeText(p.recorded_at)}`,cls:'live'};
+  return {text:`Última posición · ${positionAgeText(p.recorded_at)}`,cls:'stale'};
+}
 function renderGroup(message=''){
   const box=document.getElementById('groupList');
   if(message){box.innerHTML=`<div class="panel"><h3>Seguimiento de Grupo</h3><p>${escapeHtml(message)}</p></div>`;return;}
@@ -163,19 +183,47 @@ function renderGroup(message=''){
   const admin=groupState.group.created_by===groupState.userId || groupState.members.some(m=>m.userId===groupState.userId&&m.role==='admin');
   const membersHtml=groupState.members.map(m=>{
     const p=positions.find(x=>x.user_id===m.userId);
-    const fresh=p?.recorded_at?Math.max(0,Math.round((Date.now()-new Date(p.recorded_at).getTime())/1000)):null;
-    const status=!p?'Sin posición':p.sharing_enabled?(fresh!==null&&fresh<90?'Ubicación activa':'Última posición'):'Ubicación parada';
-    return `<div class="member"><div class="avatar">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong>${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small">${status}</div></div></div>`;
+    const st=memberStatus(p);
+    return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong>${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
   }).join('');
   box.innerHTML=`
     <div class="panel"><div class="row"><div><div class="small">TU NOMBRE</div><strong>${escapeHtml(groupState.alias)}</strong></div><span class="status ${groupState.sharing?'ok':'warn'}">${groupState.sharing?'Ubicación activa':'Ubicación parada'}</span></div></div>
-    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button><button class="secondary" id="changeGroup">Cambiar</button></div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
-    <div class="panel"><div class="row"><h3 style="margin:0;flex:1">Compañeros</h3><span class="small">${groupState.members.length} personas</span></div>${membersHtml||'<div class="small">Todavía no hay compañeros.</div>'}</div>`;
+    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong><div class="invite-actions"><button type="button" class="invite-btn" id="copyInvite">Copiar</button><button type="button" class="invite-btn" id="shareInvite">Compartir</button></div></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button><button class="secondary" id="openMapFromGroup">🗺️ Ver mapa</button></div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
+    <div class="panel"><div class="row"><h3 style="margin:0;flex:1">Compañeros</h3><span class="small">${groupState.members.length} ${groupState.members.length===1?'persona':'personas'}</span></div><div class="member-list">${membersHtml||'<div class="small">Todavía no hay compañeros.</div>'}</div></div>`;
   document.getElementById('shareToggle').onclick=()=>toggleSharing();
-  document.getElementById('changeGroup').onclick=()=>document.getElementById('groupChoiceDialog').showModal();
+  document.getElementById('openMapFromGroup').onclick=showMap;
   document.getElementById('leaveGroup').onclick=async()=>{if(confirm('¿Quieres salir de este grupo?'))await safeAction(leaveGroup)};
   document.getElementById('regenerateInvite')?.addEventListener('click',()=>safeAction(regenerateInvite));
+  document.getElementById('copyInvite').onclick=()=>copyInviteCode();
+  document.getElementById('shareInvite').onclick=()=>shareInviteCode();
+  box.querySelectorAll('[data-member-id]').forEach(btn=>btn.onclick=()=>focusMember(btn.dataset.memberId));
   if(me)updateMapCard();
+}
+async function copyInviteCode(){
+  const code=groupState.group?.invite_code||''; if(!code)return;
+  try{await navigator.clipboard.writeText(code);toast('Código copiado');}
+  catch{prompt('Copia este código:',code)}
+}
+async function shareInviteCode(){
+  const code=groupState.group?.invite_code||''; if(!code)return;
+  const text=`Únete a mi grupo de Ultreia Camino. Código: ${code}`;
+  try{if(navigator.share) await navigator.share({title:'Ultreia Camino',text}); else {await navigator.clipboard.writeText(text);toast('Invitación copiada');}}
+  catch(e){if(e?.name!=='AbortError')toast('No se pudo compartir la invitación');}
+}
+function toast(message){
+  let el=document.getElementById('ultreiaToast');
+  if(!el){el=document.createElement('div');el.id='ultreiaToast';el.className='toast';document.body.appendChild(el)}
+  el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),1800);
+}
+function focusMember(userId){
+  const p=(groupState.positions||[]).find(x=>x.user_id===userId);
+  if(!p){toast('Este compañero todavía no tiene posición');return;}
+  showMap();
+  setTimeout(()=>{
+    map.setView([p.latitude,p.longitude],16);
+    const marker=userId===groupState.userId?userMarker:groupMarkers.get(userId);
+    marker?.openPopup();
+  },100);
 }
 async function safeAction(fn){try{await fn()}catch(error){console.error(error);alert(friendlyError(error))}}
 function friendlyError(error){return error?.message||'No se pudo completar la operación. Inténtalo de nuevo.'}
@@ -216,30 +264,59 @@ function initMap(){
   window._map=map;
 }
 function markerIcon(isMe){return L.divIcon({className:'ultreia-marker',html:`<div class="marker-pin ${isMe?'me':''}">${isMe?'●':'👤'}</div>`,iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-16]})}
-function drawOwn(p){initMap();if(!userMarker){userMarker=L.marker([p.latitude,p.longitude],{icon:markerIcon(true)}).addTo(map).bindPopup(`<strong>${escapeHtml(groupState.alias||'Yo')}</strong><br>Mi posición`)}else userMarker.setLatLng([p.latitude,p.longitude]);map.setView([p.latitude,p.longitude],16);renderGroupMarkers()}
+function drawOwn(p,center=true){
+  initMap();
+  if(!userMarker){userMarker=L.marker([p.latitude,p.longitude],{icon:markerIcon(true)}).addTo(map).bindPopup(`<strong>${escapeHtml(groupState.alias||'Yo')}</strong><br>Mi posición`)}else userMarker.setLatLng([p.latitude,p.longitude]);
+  if(center) map.setView([p.latitude,p.longitude],16);
+  renderGroupMarkers();
+}
 function renderGroupMarkers(){
   if(!map)return;
   const positions=groupState.positions||[];
   const memberById=new Map((groupState.members||[]).map(m=>[m.userId,m]));
   const wanted=new Set();
   positions.forEach(p=>{
-    if(!p.latitude||!p.longitude||p.user_id===groupState.userId)return;
+    if(!Number.isFinite(Number(p.latitude))||!Number.isFinite(Number(p.longitude))||p.user_id===groupState.userId)return;
     const member=memberById.get(p.user_id);if(!member)return;
     wanted.add(p.user_id);
     const label=escapeHtml(member.alias||'Peregrino');
     let marker=groupMarkers.get(p.user_id);
     if(!marker){marker=L.marker([p.latitude,p.longitude],{icon:markerIcon(false)}).addTo(map);groupMarkers.set(p.user_id,marker)}else marker.setLatLng([p.latitude,p.longitude]);
-    marker.bindPopup(`<strong>${label}</strong><br>${p.sharing_enabled?'Ubicación activa':'Ubicación parada'}<br><span class="small">${new Date(p.recorded_at).toLocaleTimeString('es-ES')}</span>`);
+    const st=memberStatus(p);
+    marker.bindPopup(`<strong>${label}</strong><br>${st.text}<br><span class="small">${new Date(p.recorded_at).toLocaleTimeString('es-ES')}</span>`);
   });
   for(const [id,marker] of groupMarkers){if(!wanted.has(id)){map.removeLayer(marker);groupMarkers.delete(id)}}
 }
-function showMap(){document.getElementById('groupList').style.display='none';document.getElementById('mapWrap').style.display='block';initMap();renderGroupMarkers();const me=(groupState.positions||[]).find(p=>p.user_id===groupState.userId);if(me)drawOwn(me);updateMapCard();setTimeout(()=>map.invalidateSize(),80)}
+function allVisiblePoints(){
+  const points=[];
+  if(userMarker){const ll=userMarker.getLatLng();points.push([ll.lat,ll.lng])}
+  (groupState.positions||[]).forEach(p=>{if(Number.isFinite(Number(p.latitude))&&Number.isFinite(Number(p.longitude)))points.push([Number(p.latitude),Number(p.longitude)])});
+  return points;
+}
+function fitGroup(){
+  initMap(); const pts=allVisiblePoints();
+  if(!pts.length){map.setView([43.36,-8.41],10);return}
+  if(pts.length===1){map.setView(pts[0],16);return}
+  map.fitBounds(L.latLngBounds(pts),{padding:[55,55],maxZoom:16});
+}
+function showMap(){
+  document.getElementById('groupList').style.display='none';document.getElementById('mapWrap').style.display='block';
+  initMap();renderGroupMarkers();
+  const me=(groupState.positions||[]).find(p=>p.user_id===groupState.userId);if(me)drawOwn(me,false);
+  fitGroup();updateMapCard();setTimeout(()=>map.invalidateSize(),80);
+}
 function showList(){document.getElementById('mapWrap').style.display='none';document.getElementById('groupList').style.display='block'}
-function updateMapCard(){const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);const count=(groupState.positions||[]).filter(x=>x.sharing_enabled&&x.user_id!==groupState.userId).length;document.getElementById('mapCard').innerHTML=p?`<strong>${escapeHtml(groupState.alias||'Yo')}</strong> · ${p.sharing_enabled?'GPS activo':'Ubicación parada'}<br><span class="small">Precisión aprox. ${p.accuracy?Math.round(p.accuracy)+' m':'—'} · ${new Date(p.recorded_at).toLocaleTimeString('es-ES')}</span><br><span class="small">${count} compañero${count===1?'':'s'} con ubicación</span>`:'Activa «Compartir ubicación» para enviar tu posición.'}
-
+function updateMapCard(){
+  const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);
+  const others=(groupState.positions||[]).filter(x=>x.sharing_enabled&&x.user_id!==groupState.userId).length;
+  const totalMembers=groupState.members?.length||0;
+  const connection=groupState.realtimeConnected?'En directo':'Conexión interrumpida';
+  document.getElementById('mapCard').innerHTML=p?`<div class="map-card-top"><strong>${escapeHtml(groupState.alias||'Yo')}</strong><span class="connection ${groupState.realtimeConnected?'live':'offline'}"><span class="status-dot"></span>${connection}</span></div><div>${p.sharing_enabled?'Ubicación activa':'Ubicación parada'} · ${positionAgeText(p.recorded_at)}</div><span class="small">${others} de ${Math.max(0,totalMembers-1)} compañero${Math.max(0,totalMembers-1)===1?'':'s'} con ubicación</span>`:'Activa «Compartir ubicación» para enviar tu posición.';
+}
 document.getElementById('groupMapBtn').onclick=showMap;
 document.getElementById('groupListBtn').onclick=showList;
-document.getElementById('locateBtn').onclick=()=>{const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);if(p)drawOwn(p);else navigator.geolocation?.getCurrentPosition(onPosition,geoError,{enableHighAccuracy:true})};
+document.getElementById('locateBtn').onclick=()=>{const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);if(p)drawOwn(p,true);else navigator.geolocation?.getCurrentPosition(onPosition,geoError,{enableHighAccuracy:true})};
+document.getElementById('fitGroupBtn').onclick=()=>{mapFollowMode='all';fitGroup()};
 document.getElementById('refreshGroupBtn').onclick=()=>safeAction(loadGroupFromSupabase);
 document.getElementById('createGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('createAlias').value.trim(),name=document.getElementById('createGroupName').value.trim();if(!alias||!name)return;const btn=e.submitter;btn.disabled=true;try{await createGroup(alias,name);document.getElementById('createGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
 document.getElementById('joinGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('joinAlias').value.trim(),code=document.getElementById('joinCode').value.trim().toUpperCase();if(!alias||!code)return;const btn=e.submitter;btn.disabled=true;try{await joinGroup(alias,code);document.getElementById('joinGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
