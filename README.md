@@ -1,16 +1,17 @@
-# Ultreia Camino Web V9
+# Ultreia Camino Web V10
 
-V9 de la aplicación web móvil/PWA con:
-- ULTREIA CAMINO más visible en la portada.
-- Control de Gastos con flecha de regreso y acceso a configuración del presupuesto conservado.
-- Presupuesto total, fechas del Camino y cálculo diario congelado durante el día.
-- Movimientos, categorías y borrado por deslizamiento.
-- Seguimiento de Grupo con flujo Crear / Unirse.
-- Alias separado del nombre del grupo.
-- Código de invitación generado automáticamente al crear un grupo.
-- GPS real del teléfono y mapa OpenStreetMap.
+V10 de la aplicación web móvil/PWA con Control de Gastos y Seguimiento de Grupo real con Supabase.
 
-Nota: esta entrega deja preparada la interfaz y el GPS del navegador. La conexión web al backend Supabase existente todavía requiere identificar las credenciales públicas y el contrato exacto de las tablas/RLS del proyecto Flutter; no se inventan credenciales ni esquemas.
+Cambios principales:
+- Pantalla de grupo sin scroll general; el scroll queda confinado al listado de compañeros.
+- Eliminado el bloque superior de nombre/estado personal para ganar espacio.
+- Aviso explícito de privacidad: sin compartir ubicación, el usuario no comparte su posición y tampoco ve las posiciones de los demás.
+- El permiso de ubicación se solicita primero con una posición puntual; si se deniega, el estado de compartir no queda activado.
+- Los marcadores y nombres usan un color de identificación único dentro del grupo y consistente entre lista y mapa.
+- Deducción de miembros por user_id para evitar duplicados visuales.
+- Capas OSM automáticas para GR, Caminos de Santiago y Vías Verdes mediante Overpass, sin selector de capas.
+- Preparación para pertenecer a varios grupos y selección del grupo activo.
+- Sesión Supabase persistente explícita para evitar crear nuevas identidades anónimas por reintentos.
+- Versión visible únicamente en la portada: V10.
 
-
-V9: colores de peregrinos estables entre lista y mapa, refresco manual en grupo, actualización al recuperar el foco, compartir/detener ubicación sin abrir el mapa, versión discreta en portada y rutas OSM (GR, Camino de Santiago y Vías Verdes) cargadas automáticamente en el mapa.
+Nota sobre grupos múltiples: la interfaz web V10 admite el concepto de grupo activo y consulta las membresías existentes, pero el backend actual conocido expone RPCs diseñadas originalmente alrededor de un único grupo activo (`join_group` y `leave_current_group`). Para garantizar completamente la pertenencia simultánea a varios grupos, esas funciones/RLS deben adaptarse en Supabase con una migración específica. No se inventa ni se modifica el contrato backend sin esa migración.

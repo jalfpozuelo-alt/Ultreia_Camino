@@ -42,3 +42,12 @@ html,body{height:100%;overflow:hidden}body{padding-bottom:0}.phone{height:100dvh
 
 /* V9 */
 .home-version{position:absolute;right:14px;bottom:10px;font-size:10px;font-weight:700;letter-spacing:.8px;color:#aeb7c1;opacity:.72;pointer-events:none}.home-brand{line-height:1}.member-name-label{color:#123b6d!important}.member-name-label[style]{color:#123b6d!important}.marker-pin{background:var(--member-color,#123b6d)!important}.marker-pin.me{background:var(--member-color,#123b6d)!important;color:#123b6d}.map-actions{justify-content:flex-end}.route-panel{display:none}
+
+/* V10 */
+.group-body{overflow:hidden!important;display:flex;flex-direction:column;min-height:0;padding:8px 12px 12px!important}
+.group-fixed-content{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.members-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.member-list{max-height:none!important;flex:1;min-height:0;overflow-y:auto!important;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:3px}
+.group-switch{flex:0 0 auto;margin-bottom:8px}.group-select{width:100%;box-sizing:border-box;border:1px solid #d6dee6;border-radius:12px;padding:10px 12px;background:#fff;color:#123b6d;font-weight:800}
+.privacy-note{margin-top:10px;padding:9px 11px;border-radius:11px;background:#eef5fb;color:#496274;font-size:12px;line-height:1.35}
+.group-body .panel{margin-bottom:8px}.group-body .members-panel{margin-bottom:0}

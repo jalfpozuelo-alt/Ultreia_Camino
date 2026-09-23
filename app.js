@@ -3,7 +3,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // Ultreia Camino Web V9 — Control de Gastos + Seguimiento de Grupo real con Supabase.
 const SUPABASE_URL = 'https://bzjsniaecbccgxaeoedc.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ZAq7GYD2M8nn8S0z4j6QaA_gRWrhG7w';
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { persistSession:true, autoRefreshToken:true, detectSessionInUrl:false });
 
 const HOME='homeView', EXP='expenseView', GROUP='groupView';
 let currentView=HOME;
@@ -53,13 +53,16 @@ function openPlan(){document.getElementById('budget').value=state.plan.budget?St
 document.getElementById('newExpenseBtn').onclick=()=>{if(!state.plan.start||!state.plan.end){alert('Primero configura el presupuesto y las fechas.');openPlan();return}openExpense()};document.getElementById('categoriesBtn').onclick=openCategories;document.getElementById('planBtn')?.addEventListener('click',openPlan);document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.close).close());document.getElementById('expenseForm').onsubmit=e=>{e.preventDefault();const amount=parseAmount(document.getElementById('amount').value),date=document.getElementById('expenseDate').value;if(!amount||amount<=0||!date)return;const item={id:editingId||crypto.randomUUID(),concept:document.getElementById('concept').value,comment:document.getElementById('comment').value.trim(),amount,date};if(editingId)state.expenses=state.expenses.map(x=>x.id===editingId?item:x);else state.expenses.push(item);saveExpense();document.getElementById('expenseDialog').close();renderExpense()};document.getElementById('planForm').onsubmit=e=>{e.preventDefault();const budget=parseAmount(document.getElementById('budget').value),start=document.getElementById('startDate').value,end=document.getElementById('endDate').value;if(!budget||!start||!end||end<start){alert('Revisa presupuesto y fechas.');return}state.plan={budget,start,end};saveExpense();document.getElementById('planDialog').close();renderExpense()};document.getElementById('resetPlan').onclick=()=>{if(confirm('¿Restablecer el plan y borrar todos los gastos?')){state={expenses:[],plan:{budget:0,start:null,end:null}};saveExpense();document.getElementById('planDialog').close();renderExpense()}};document.getElementById('exportBtn').onclick=()=>{const rows=[['Fecha','Categoría','Comentario','Importe (€)'],...state.expenses.sort((a,b)=>b.date.localeCompare(a.date)).map(e=>[dateEs(e.date),e.concept,e.comment,e.amount.toFixed(2)])],csv='\ufeff'+rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(';')).join('\r\n'),blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ultreia_gastos.csv';a.click();URL.revokeObjectURL(a.href)};
 
 // ---------------- Seguimiento de Grupo — Supabase real ----------------
-const GROUP_KEY='ultreia-group-web-v3';
+const GROUP_KEY='ultreia-group-web-v10';
+const ACTIVE_GROUP_KEY='ultreia-active-group-v1';
 let groupState=loadGroup();
+let groupMemberships=[];
 let map=null,userMarker=null,groupMarkers=new Map(),watchId=null,realtimeChannel=null,groupInitialized=false,groupRefreshTimer=null;
 function loadGroup(){try{return JSON.parse(localStorage.getItem(GROUP_KEY)||'{}')}catch{return {}}}
 function saveGroup(){localStorage.setItem(GROUP_KEY,JSON.stringify(groupState))}
 function localAlias(){return groupState.alias||''}
-function ensureGroupDefaults(){groupState={alias:groupState.alias||'',sharing:false,...groupState};}
+function ensureGroupDefaults(){groupState={alias:groupState.alias||'',sharing:false,activeGroupId:groupState.activeGroupId||localStorage.getItem(ACTIVE_GROUP_KEY)||null,...groupState};}
+function saveActiveGroupId(id){groupState.activeGroupId=id||null;if(id)localStorage.setItem(ACTIVE_GROUP_KEY,id);else localStorage.removeItem(ACTIVE_GROUP_KEY);saveGroup();}
 ensureGroupDefaults();
 
 async function initGroup(){
@@ -94,25 +97,18 @@ async function refreshGroupDataOnly(){
   const [g,m,p]=await Promise.all([
     supabase.from('groups').select('id,name,invite_code,invite_expires_at,created_by,created_at').eq('id',groupId).single(),
     supabase.from('group_members').select('user_id,role,joined_at,profiles!group_members_user_id_fkey(alias)').eq('group_id',groupId).order('joined_at'),
-    supabase.from('group_locations').select().eq('group_id',groupId)
+    groupState.sharing ? supabase.from('group_locations').select().eq('group_id',groupId) : Promise.resolve({data:[],error:null})
   ]);
   if(g.error)throw g.error;if(m.error)throw m.error;if(p.error)throw p.error;
   groupState.group=g.data;
-  const previousSnapshot=JSON.stringify({group:groupState.group,members:groupState.members||[],positions:groupState.positions||[],sharing:groupState.sharing});
-  groupState.members=(m.data||[]).map(row=>({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at}));
-  groupState.positions=p.data||[];
-  const me=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);
-  groupState.sharing=!!me?.sharing_enabled;
-  saveGroup();
-  const nextSnapshot=JSON.stringify({group:groupState.group,members:groupState.members||[],positions:groupState.positions||[],sharing:groupState.sharing});
-  if(previousSnapshot!==nextSnapshot) {
-    renderGroup();
-    if(map && document.getElementById('mapWrap').style.display!=='none') { renderGroupMarkers(); updateMapCard(); }
-  } else {
-    renderGroupMarkers();
-    updateMapCard();
-  }
+  groupState.members=(m.data||[]).reduce((out,row)=>{if(!out.some(x=>x.userId===row.user_id))out.push({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at});return out},[]);
+  groupState.positions=groupState.sharing?(p.data||[]).filter(x=>x.sharing_enabled):[];
+  const me=groupState.positions.find(x=>x.user_id===groupState.userId);
+  if(groupState.sharing && !me){ groupState.sharing=false; stopGps(); }
+  saveGroup(); renderGroup();
+  if(map && document.getElementById('mapWrap').style.display!=='none'){renderGroupMarkers();updateMapCard();}
 }
+
 async function ensureProfile(){
   const {data:{user},error:authError}=await supabase.auth.getUser();
   if(authError||!user)throw authError||new Error('No se pudo crear la identidad');
@@ -131,30 +127,45 @@ async function updateAlias(alias){
   const {error}=await supabase.from('profiles').update({alias:clean}).eq('id',groupState.userId);if(error)throw error;
   groupState.alias=clean;saveGroup();
 }
-async function loadGroupFromSupabase(){
+async function loadGroupFromSupabase(preferredGroupId=null){
   const userId=groupState.userId;
-  const {data:membershipRows,error:membershipError}=await supabase.from('group_members').select('group_id').eq('user_id',userId).limit(1);
+  const {data:membershipRows,error:membershipError}=await supabase.from('group_members').select('group_id').eq('user_id',userId).order('joined_at');
   if(membershipError)throw membershipError;
-  if(!membershipRows?.length){
-    groupState.group=null;groupState.members=[];groupState.positions=[];groupState.sharing=false;saveGroup();await stopRealtime();stopGps();renderGroup();return;
+  const ids=[...(membershipRows||[]).map(x=>x.group_id)].filter(Boolean);
+  if(!ids.length){
+    groupMemberships=[]; groupState.group=null; groupState.members=[]; groupState.positions=[]; groupState.sharing=false;
+    saveActiveGroupId(null); await stopRealtime(); stopGps(); renderGroup(); return;
   }
-  const groupId=membershipRows[0].group_id;
-  const [g,m,p]=await Promise.all([
-    supabase.from('groups').select('id,name,invite_code,invite_expires_at,created_by,created_at').eq('id',groupId).single(),
+  const {data:groups,error:gError}=await supabase.from('groups').select('id,name,invite_code,invite_expires_at,created_by,created_at').in('id',ids);
+  if(gError)throw gError;
+  groupMemberships=(groups||[]).sort((a,b)=>String(a.name).localeCompare(String(b.name),'es'));
+  const chosenId=preferredGroupId||groupState.activeGroupId;
+  const active=groupMemberships.find(g=>g.id===chosenId)||groupMemberships[0];
+  saveActiveGroupId(active.id);
+  await loadActiveGroup(active.id);
+}
+async function loadActiveGroup(groupId){
+  const active=groupMemberships.find(g=>g.id===groupId); if(!active) return;
+  const [m,p]=await Promise.all([
     supabase.from('group_members').select('user_id,role,joined_at,profiles!group_members_user_id_fkey(alias)').eq('group_id',groupId).order('joined_at'),
-    supabase.from('group_locations').select().eq('group_id',groupId)
+    groupState.sharing ? supabase.from('group_locations').select().eq('group_id',groupId) : Promise.resolve({data:[],error:null})
   ]);
-  if(g.error)throw g.error;if(m.error)throw m.error;if(p.error)throw p.error;
-  groupState.group=g.data;
-  groupState.members=(m.data||[]).map(row=>({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at}));
-  groupState.positions=p.data||[];
-  const me=(groupState.positions||[]).find(x=>x.user_id===userId);
+  if(m.error)throw m.error;if(p.error)throw p.error;
+  groupState.group=active;
+  groupState.members=(m.data||[]).reduce((out,row)=>{if(!out.some(x=>x.userId===row.user_id))out.push({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at});return out},[]);
+  groupState.positions=groupState.sharing?(p.data||[]).filter(x=>x.sharing_enabled):[];
+  const me=groupState.positions.find(x=>x.user_id===groupState.userId);
   groupState.sharing=!!me?.sharing_enabled;
   saveGroup();
   await connectRealtime(groupId);
   if(groupState.sharing) startGps(); else stopGps();
   renderGroup();
 }
+async function switchGroup(groupId){
+  if(!groupMemberships.some(g=>g.id===groupId))return;
+  stopGps(); await stopRealtime(); groupState.sharing=false; groupState.positions=[]; saveActiveGroupId(groupId); await loadActiveGroup(groupId);
+}
+
 async function createGroup(alias,name){
   await updateAlias(alias);
   const {error}=await supabase.rpc('create_group',{group_name:name.trim()});
@@ -164,7 +175,11 @@ async function createGroup(alias,name){
 }
 async function joinGroup(alias,code){
   await updateAlias(alias);
-  const {error}=await supabase.rpc('join_group',{code:code.trim().toUpperCase()});
+  const cleanCode=code.trim().toUpperCase();
+  const {data:existingGroups,error:existingError}=await supabase.from('groups').select('id,name,invite_code,invite_expires_at,created_by,created_at').eq('invite_code',cleanCode).limit(1);
+  if(existingError)throw existingError;
+  if(existingGroups?.[0] && groupMemberships.some(g=>g.id===existingGroups[0].id)){ await switchGroup(existingGroups[0].id); return; }
+  const {error}=await supabase.rpc('join_group',{code:cleanCode});
   if(error)throw error;
   await loadGroupFromSupabase();
   await realtimeChannel?.send({type:'broadcast',event:'membership',payload:{group_id:groupState.group?.id}});
@@ -206,12 +221,15 @@ function positionAgeText(iso){
   const h=Math.round(min/60);
   return `hace ${h} h`;
 }
-const MEMBER_COLORS=['#8e44ad','#e05252','#2f80ed','#e67e22','#16a085','#d35400','#7f8c8d','#c0392b','#2980b9','#8e44ad','#27ae60','#9b59b6'];
+const MEMBER_COLORS=['#8e44ad','#e05252','#2f80ed','#e67e22','#16a085','#d35400','#7f8c8d','#c0392b','#2980b9','#27ae60','#9b59b6','#8e5b3a','#2c9c69','#c46bdb','#5267c7','#c47a2c'];
 function memberColor(userId){
-  const id=String(userId||'');
-  let hash=2166136261;
-  for(let i=0;i<id.length;i++){hash^=id.charCodeAt(i);hash=Math.imul(hash,16777619);}
-  return MEMBER_COLORS[(hash>>>0)%MEMBER_COLORS.length];
+  const members=[...(groupState.members||[])].sort((a,b)=>String(a.userId).localeCompare(String(b.userId)));
+  const index=members.findIndex(m=>m.userId===userId);
+  if(index<0)return MEMBER_COLORS[0];
+  let hash=2166136261; const id=String(userId||''); for(let i=0;i<id.length;i++){hash^=id.charCodeAt(i);hash=Math.imul(hash,16777619)}
+  const preferred=(hash>>>0)%MEMBER_COLORS.length; const used=new Set();
+  members.forEach((m,i)=>{if(i<index){let h=2166136261;const mid=String(m.userId);for(let j=0;j<mid.length;j++){h^=mid.charCodeAt(j);h=Math.imul(h,16777619)}let c=(h>>>0)%MEMBER_COLORS.length;while(used.has(c))c=(c+1)%MEMBER_COLORS.length;used.add(c)}});
+  let c=preferred; while(used.has(c))c=(c+1)%MEMBER_COLORS.length; return MEMBER_COLORS[c];
 }
 function colorText(color){
   const hex=String(color||'').replace('#','');
@@ -231,30 +249,21 @@ function renderGroup(message=''){
   if(message){box.innerHTML=`<div class="panel"><h3>Seguimiento de Grupo</h3><p>${escapeHtml(message)}</p></div>`;return;}
   if(!groupState.group){
     box.innerHTML=`<div class="panel group-start"><h3>Seguimiento de Grupo</h3><p>Camina junto a tus compañeros y comparte tu posición.</p><div class="choice-stack"><button class="primary choice-btn" id="openCreate">👥 Crear un grupo</button><button class="secondary choice-btn" id="openJoin">🔑 Unirse a un grupo</button></div></div>`;
-    document.getElementById('openCreate').onclick=()=>document.getElementById('createGroupDialog').showModal();
-    document.getElementById('openJoin').onclick=()=>document.getElementById('joinGroupDialog').showModal();
-    return;
+    document.getElementById('openCreate').onclick=()=>document.getElementById('createGroupDialog').showModal();document.getElementById('openJoin').onclick=()=>document.getElementById('joinGroupDialog').showModal();return;
   }
-  const positions=groupState.positions||[];
-  const me=positions.find(p=>p.user_id===groupState.userId);
-  const admin=groupState.group.created_by===groupState.userId || groupState.members.some(m=>m.userId===groupState.userId&&m.role==='admin');
-  const membersHtml=groupState.members.map(m=>{
-    const p=positions.find(x=>x.user_id===m.userId);
-    const st=memberStatus(p);
-    const color=memberColor(m.userId); return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar" style="--member-color:${color};background:${color};color:${colorText(color)}">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong class="member-name-label" style="--member-color:${color};background:${color};color:${colorText(color)}">${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
-  }).join('');
-  box.innerHTML=`
-    <div class="panel"><div class="row"><div><div class="small">TU NOMBRE</div><strong>${escapeHtml(groupState.alias)}</strong></div><span class="status ${groupState.sharing?'ok':'warn'}">${groupState.sharing?'Ubicación activa':'Ubicación parada'}</span></div></div>
-    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong><div class="invite-actions"><button type="button" class="invite-btn" id="copyInvite">Copiar</button><button type="button" class="invite-btn" id="shareInvite">Compartir</button></div></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button></div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
-    <div class="panel"><div class="row"><h3 style="margin:0;flex:1">Compañeros</h3><span class="small">${groupState.members.length} ${groupState.members.length===1?'persona':'personas'}</span></div><div class="member-list">${membersHtml||'<div class="small">Todavía no hay compañeros.</div>'}</div></div>`;
-  document.getElementById('shareToggle').onclick=()=>toggleSharing();
-  document.getElementById('leaveGroup').onclick=async()=>{if(confirm('¿Quieres salir de este grupo?'))await safeAction(leaveGroup)};
-  document.getElementById('regenerateInvite')?.addEventListener('click',()=>safeAction(regenerateInvite));
-  document.getElementById('copyInvite').onclick=()=>copyInviteCode();
-  document.getElementById('shareInvite').onclick=()=>shareInviteCode();
-  box.querySelectorAll('[data-member-id]').forEach(btn=>btn.onclick=()=>focusMember(btn.dataset.memberId));
-  if(me)updateMapCard();
+  const positions=groupState.positions||[]; const admin=groupState.group.created_by===groupState.userId||groupState.members.some(m=>m.userId===groupState.userId&&m.role==='admin');
+  const membersHtml=groupState.members.map(m=>{const p=positions.find(x=>x.user_id===m.userId);const st=memberStatus(p);const color=memberColor(m.userId);return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar" style="background:${color};color:${colorText(color)}">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong class="member-name-label" style="background:${color};color:${colorText(color)}">${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`}).join('');
+  const privacy=groupState.sharing?'Compartiendo tu ubicación con este grupo.':'Tu ubicación es privada. No compartes tu posición ni puedes ver las posiciones de los demás.';
+  const selector=groupMemberships.length>1?`<select id="activeGroupSelect" class="group-select">${groupMemberships.map(g=>`<option value="${escapeHtml(g.id)}" ${g.id===groupState.group.id?'selected':''}>${escapeHtml(g.name)}</option>`).join('')}</select>`:'';
+  box.innerHTML=`<div class="group-fixed-content">
+    ${selector?`<div class="group-switch">${selector}</div>`:''}
+    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong><div class="invite-actions"><button type="button" class="invite-btn" id="copyInvite">Copiar</button><button type="button" class="invite-btn" id="shareInvite">Compartir</button></div></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button></div><div class="privacy-note">🔒 ${privacy}</div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
+    <div class="panel members-panel"><div class="row"><h3 style="margin:0;flex:1">Compañeros</h3><span class="small">${groupState.members.length} ${groupState.members.length===1?'persona':'personas'}</span></div><div class="member-list">${membersHtml||'<div class="small">Todavía no hay compañeros.</div>'}</div></div>
+  </div>`;
+  document.getElementById('shareToggle').onclick=()=>toggleSharing();document.getElementById('leaveGroup').onclick=async()=>{if(confirm('¿Quieres salir de este grupo?'))await safeAction(leaveGroup)};document.getElementById('regenerateInvite')?.addEventListener('click',()=>safeAction(regenerateInvite));document.getElementById('copyInvite').onclick=()=>copyInviteCode();document.getElementById('shareInvite').onclick=()=>shareInviteCode();document.getElementById('activeGroupSelect')?.addEventListener('change',e=>safeAction(()=>switchGroup(e.target.value)));box.querySelectorAll('[data-member-id]').forEach(btn=>btn.onclick=()=>focusMember(btn.dataset.memberId));
+  updateMapCard();
 }
+
 async function copyInviteCode(){
   const code=groupState.group?.invite_code||''; if(!code)return;
   try{await navigator.clipboard.writeText(code);toast('Código copiado');}
@@ -286,19 +295,23 @@ function friendlyError(error){return error?.message||'No se pudo completar la op
 
 function startGps(){
   if(watchId!==null)return;
-  if(!navigator.geolocation){alert('Este dispositivo no permite obtener la ubicación.');groupState.sharing=false;saveGroup();renderGroup();return;}
+  if(!navigator.geolocation){groupState.sharing=false;saveGroup();renderGroup();toast('Este dispositivo no permite compartir ubicación.');return;}
   watchId=navigator.geolocation.watchPosition(onPosition,geoError,{enableHighAccuracy:true,maximumAge:10000,timeout:20000});
 }
 function stopGps(){if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}}
+function clearOtherPositions(){groupState.positions=(groupState.positions||[]).filter(p=>p.user_id===groupState.userId);saveGroup()}
 async function toggleSharing(){
   if(!groupState.group)return;
   if(groupState.sharing){
     groupState.sharing=false;saveGroup();stopGps();
     const prev=(groupState.positions||[]).find(p=>p.user_id===groupState.userId);
     if(prev){const stopped={...prev,sharing_enabled:false,recorded_at:new Date().toISOString()};upsertLocalPosition(stopped);try{await publishPosition(stopped,true)}catch(e){console.error(e)}}
-    renderGroup();return;
+    clearOtherPositions(); renderGroup(); return;
   }
-  groupState.sharing=true;saveGroup();renderGroup();startGps();
+  if(!navigator.geolocation){toast('Este dispositivo no permite compartir ubicación.');return;}
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    groupState.sharing=true;saveGroup();renderGroup();await onPosition(pos);startGps();
+  },geoError,{enableHighAccuracy:true,maximumAge:0,timeout:15000});
 }
 async function onPosition(pos){
   if(!groupState.sharing||!groupState.group||!groupState.userId)return;
@@ -306,68 +319,49 @@ async function onPosition(pos){
   upsertLocalPosition(p); if(document.getElementById('mapWrap').style.display!=='none') { drawOwn(p,false); } updateMapCard();
   try{await publishPosition(p,false)}catch(error){console.error(error)}
 }
-async function publishPosition(p,force){
-  const {error}=await supabase.from('group_locations').upsert(p,{onConflict:'user_id,group_id'});if(error)throw error;
-  if(realtimeChannel){await realtimeChannel.send({type:'broadcast',event:'location',payload:p})}
+async function publishPosition(p,force){const {error}=await supabase.from('group_locations').upsert(p,{onConflict:'user_id,group_id'});if(error)throw error;if(realtimeChannel)await realtimeChannel.send({type:'broadcast',event:'location',payload:p})}
+function geoError(e){
+  groupState.sharing=false;saveGroup();stopGps();renderGroup();
+  const code=e?.code;
+  if(code===1) toast('La ubicación está bloqueada. Actívala en los permisos de este sitio y vuelve a intentarlo.');
+  else if(code===2) toast('No se ha podido obtener tu posición. Comprueba que la ubicación esté activada.');
+  else if(code===3) toast('La ubicación está tardando demasiado. Vuelve a intentarlo.');
+  else toast('No se ha podido obtener tu ubicación.');
 }
-function geoError(e){alert('No se pudo obtener la ubicación: '+(e?.message||'comprueba los permisos de ubicación.'))}
 
 let routeLayers={gr:L.layerGroup(),santiago:L.layerGroup(),greenways:L.layerGroup()};
 let routeLoaded={gr:false,santiago:false,greenways:false};
 let routeLoadTimer=null;
 const OVERPASS_ENDPOINTS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
 function routeRelationMatches(rel,kind){
-  const t=rel.tags||{}; const route=t.route||''; const network=t.network||''; const name=(t.name||'')+' '+(t.ref||'')+' '+(t.operator||'');
-  if(kind==='gr') return /(^|\s)GR[- ]?\d+/i.test(name) || (route==='hiking'&&['nwn','rwn'].includes(network)) || (route==='foot'&&['nwn','rwn'].includes(network));
-  if(kind==='santiago') return route==='pilgrimage' || /santiago|camino de santiago|jacobe/i.test(name);
-  if(kind==='greenways') return /via verde|vía verde|vias verdes|vías verdes/i.test(name);
+  const t=rel.tags||{}; const route=(t.route||'').toLowerCase(); const network=(t.network||'').toLowerCase(); const name=`${t.name||''} ${t.ref||''} ${t.operator||''}`;
+  if(kind==='gr') return /^gr[- ]?\d+/i.test(String(t.ref||'')) || (route==='hiking'&&/\bgr[- ]?\d+/i.test(name));
+  if(kind==='santiago') return route==='pilgrimage' || /camino de santiago|santiago de compostela|camino jacobeo|jacobe/i.test(name);
+  if(kind==='greenways') return /v[ií]a verde|v[ií]as verdes/i.test(name);
   return false;
 }
 function routeColor(kind){return kind==='gr'?'#d97706':kind==='santiago'?'#7c3aed':'#15803d'}
 function routeSelectors(kind){
-  if(kind==='gr') return ['relation[route=hiking][ref~"^GR[- ]?[0-9]",i]','relation[route=foot][ref~"^GR[- ]?[0-9]",i]','relation[route=hiking][network~"^(nwn|rwn)$"]','relation[route=foot][network~"^(nwn|rwn)$"]'];
-  if(kind==='santiago') return ['relation[route=pilgrimage]','relation[name~"santiago|camino de santiago|jacobe",i]','relation[ref~"santiago|jacobe",i]'];
-  return ['relation[name~"v[ií]a verde|v[ií]as verdes",i]','relation[ref~"v[ií]a verde|v[ií]as verdes",i]','relation[operator~"v[ií]a verde|v[ií]as verdes",i]'];
+  if(kind==='gr') return ['relation[route=hiking][ref~"^GR[- ]?[0-9]",i]','relation[route=foot][ref~"^GR[- ]?[0-9]",i]','relation[ref~"^GR[- ]?[0-9]",i]'];
+  if(kind==='santiago') return ['relation[route=pilgrimage]','relation[name~"Camino de Santiago|Santiago de Compostela|Camino Jacobeo|Jacobe",i]','relation[ref~"Camino|Santiago|Jacobe",i]'];
+  return ['relation[name~"V[ií]a Verde|V[ií]as Verdes",i]','relation[operator~"V[ií]a Verde|V[ií]as Verdes",i]'];
 }
 async function loadOsmRoutes(kind){
-  if(!map)return;
-  const b=map.getBounds(); const s=b.getSouth().toFixed(5),w=b.getWest().toFixed(5),n=b.getNorth().toFixed(5),e=b.getEast().toFixed(5);
-  const bbox=`(${s},${w},${n},${e})`;
-  const selectors=routeSelectors(kind);
-  const q=`[out:json][timeout:25];(${selectors.map(x=>x+bbox).join(';')});out body;>;out geom;`;
-  let data=null,lastError=null;
-  for(const endpoint of OVERPASS_ENDPOINTS){
-    try{
-      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:q});
-      if(!res.ok)throw new Error(`Overpass ${res.status}`);
-      data=await res.json(); break;
-    }catch(error){lastError=error;}
-  }
-  if(!data){console.warn('No se pudieron cargar rutas OSM',kind,lastError);return false;}
-  const els=data.elements||[]; const ways=new Map(els.filter(x=>x.type==='way').map(x=>[x.id,x]));
-  const rels=els.filter(x=>x.type==='relation'&&routeRelationMatches(x,kind)); const layer=routeLayers[kind]; layer.clearLayers();
-  for(const rel of rels){
-    const seen=new Set();
-    for(const m of (rel.members||[])){
-      if(m.type!=='way'||seen.has(m.ref))continue;
-      const way=ways.get(m.ref); if(!way?.geometry?.length)continue; seen.add(m.ref);
-      const coords=way.geometry.map(g=>[g.lat,g.lon]);
-      L.polyline(coords,{color:routeColor(kind),weight:4,opacity:.78,lineCap:'round',lineJoin:'round'}).bindTooltip(escapeHtml(rel.tags?.name||rel.tags?.ref||'Ruta OSM'),{sticky:true}).addTo(layer);
-    }
-  }
-  if(!map.hasLayer(layer))layer.addTo(map);
-  routeLoaded[kind]=true;
-  return true;
+  if(!map)return false;
+  const b=map.getBounds().pad(0.15); const s=b.getSouth().toFixed(5),w=b.getWest().toFixed(5),n=b.getNorth().toFixed(5),e=b.getEast().toFixed(5); const bbox=`(${s},${w},${n},${e})`;
+  const selectors=routeSelectors(kind); const q=`[out:json][timeout:45];(${selectors.map(x=>x+bbox).join(';')});out body;>;out geom;`;
+  let data=null;
+  for(const endpoint of OVERPASS_ENDPOINTS){try{const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:q});if(!res.ok)continue;data=await res.json();break}catch{}}
+  const layer=routeLayers[kind];layer.clearLayers();
+  if(!data){routeLoaded[kind]=false;return false;}
+  const els=data.elements||[],ways=new Map(els.filter(x=>x.type==='way').map(x=>[x.id,x]));
+  const rels=els.filter(x=>x.type==='relation'&&routeRelationMatches(x,kind));
+  for(const rel of rels){for(const m of (rel.members||[])){if(m.type!=='way')continue;const way=ways.get(m.ref);if(!way?.geometry?.length)continue;const coords=way.geometry.map(g=>[g.lat,g.lon]);L.polyline(coords,{color:routeColor(kind),weight:4,opacity:.82,lineCap:'round',lineJoin:'round'}).bindTooltip(escapeHtml(rel.tags?.name||rel.tags?.ref||'Ruta OSM'),{sticky:true}).addTo(layer)}}
+  if(!map.hasLayer(layer))layer.addTo(map); routeLoaded[kind]=true; return true;
 }
-async function loadAllOsmRoutes(force=false){
-  if(!map)return;
-  if(force){Object.keys(routeLoaded).forEach(k=>routeLoaded[k]=false);Object.values(routeLayers).forEach(l=>l.clearLayers());}
-  await Promise.all(Object.keys(routeLayers).map(k=>routeLoaded[k]?Promise.resolve(true):loadOsmRoutes(k)));
-}
-function scheduleOsmRouteRefresh(){
-  clearTimeout(routeLoadTimer);
-  routeLoadTimer=setTimeout(()=>loadAllOsmRoutes(true),700);
-}
+async function loadAllOsmRoutes(force=false){if(!map)return;if(force){Object.keys(routeLoaded).forEach(k=>routeLoaded[k]=false);Object.values(routeLayers).forEach(l=>l.clearLayers())}await Promise.all(Object.keys(routeLayers).map(k=>loadOsmRoutes(k)))}
+function scheduleOsmRouteRefresh(){clearTimeout(routeLoadTimer);routeLoadTimer=setTimeout(()=>loadAllOsmRoutes(true),700)}
+
 function initMap(){
   if(map)return;
   map=L.map('map',{zoomControl:false}).setView([43.36,-8.41],10);
@@ -385,7 +379,7 @@ function drawOwn(p,center=true){
 }
 function renderGroupMarkers(){
   if(!map)return;
-  const positions=groupState.positions||[];
+  const positions=groupState.sharing?(groupState.positions||[]):[];
   const memberById=new Map((groupState.members||[]).map(m=>[m.userId,m]));
   const wanted=new Set();
   positions.forEach(p=>{
@@ -403,7 +397,7 @@ function renderGroupMarkers(){
 function allVisiblePoints(){
   const points=[];
   if(userMarker){const ll=userMarker.getLatLng();points.push([ll.lat,ll.lng])}
-  (groupState.positions||[]).forEach(p=>{if(Number.isFinite(Number(p.latitude))&&Number.isFinite(Number(p.longitude)))points.push([Number(p.latitude),Number(p.longitude)])});
+  (groupState.sharing?(groupState.positions||[]):[]).forEach(p=>{if(Number.isFinite(Number(p.latitude))&&Number.isFinite(Number(p.longitude)))points.push([Number(p.latitude),Number(p.longitude)])});
   return points;
 }
 function fitGroup(){
@@ -420,16 +414,16 @@ function showMap(){
 }
 function showList(){document.getElementById('mapWrap').style.display='none';document.getElementById('groupList').style.display='block'}
 function updateMapCard(){
-  const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);
-  const others=(groupState.positions||[]).filter(x=>x.sharing_enabled&&x.user_id!==groupState.userId).length;
-  const totalMembers=groupState.members?.length||0;
-  const connection=groupState.realtimeConnected?'En directo':'Conexión interrumpida';
-  document.getElementById('mapCard').innerHTML=p?`<div class="map-card-top"><strong>${escapeHtml(groupState.alias||'Yo')}</strong><span class="connection ${groupState.realtimeConnected?'live':'offline'}"><span class="status-dot"></span>${connection}</span></div><div>${p.sharing_enabled?'Ubicación activa':'Ubicación parada'} · ${positionAgeText(p.recorded_at)}</div><span class="small">${others} de ${Math.max(0,totalMembers-1)} compañero${Math.max(0,totalMembers-1)===1?'':'s'} con ubicación</span>`:'Activa «Compartir ubicación» para enviar tu posición.';
+  const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId); const totalMembers=groupState.members?.length||0;
+  if(!groupState.sharing){document.getElementById('mapCard').innerHTML='<strong>Ubicación privada</strong><br><span class="small">Activa «Compartir ubicación» para participar. Mientras no compartas, tampoco podrás ver las posiciones de los demás.</span>';return;}
+  const others=(groupState.positions||[]).filter(x=>x.sharing_enabled&&x.user_id!==groupState.userId).length; const connection=groupState.realtimeConnected?'En directo':'Conexión interrumpida';
+  document.getElementById('mapCard').innerHTML=p?`<div class="map-card-top"><strong>${escapeHtml(groupState.alias||'Yo')}</strong><span class="connection ${groupState.realtimeConnected?'live':'offline'}"><span class="status-dot"></span>${connection}</span></div><div>Ubicación activa · ${positionAgeText(p.recorded_at)}</div><span class="small">${others} de ${Math.max(0,totalMembers-1)} compañero${Math.max(0,totalMembers-1)===1?'':'s'} con ubicación</span>`:'Esperando tu posición…';
 }
+
 document.getElementById('groupMapBtn').onclick=showMap;
 document.getElementById('groupListBtn').onclick=showList;
 document.getElementById('groupRefreshBtn').onclick=()=>safeAction(async()=>{await loadGroupFromSupabase(); if(map && document.getElementById('mapWrap').style.display!=='none'){await loadAllOsmRoutes(true);}});
-document.getElementById('locateBtn').onclick=()=>{const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);if(p)drawOwn(p,true);else navigator.geolocation?.getCurrentPosition(onPosition,geoError,{enableHighAccuracy:true})};
+document.getElementById('locateBtn').onclick=()=>{if(!groupState.sharing){toast('Activa «Compartir ubicación» para ver tu posición en el mapa.');return}const p=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);if(p)drawOwn(p,true)};
 document.getElementById('fitGroupBtn').onclick=()=>{mapFollowMode='all';fitGroup()};
 document.getElementById('createGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('createAlias').value.trim(),name=document.getElementById('createGroupName').value.trim();if(!alias||!name)return;const btn=e.submitter;btn.disabled=true;try{await createGroup(alias,name);document.getElementById('createGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
 document.getElementById('joinGroupForm').onsubmit=async e=>{e.preventDefault();const alias=document.getElementById('joinAlias').value.trim(),code=document.getElementById('joinCode').value.trim().toUpperCase();if(!alias||!code)return;const btn=e.submitter;btn.disabled=true;try{await joinGroup(alias,code);document.getElementById('joinGroupDialog').close();renderGroup()}catch(error){alert(friendlyError(error))}finally{btn.disabled=false}};
