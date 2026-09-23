@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-// Ultreia Camino Web V3 — Control de Gastos + Seguimiento de Grupo real con Supabase.
+// Ultreia Camino Web V6 — Control de Gastos + Seguimiento de Grupo real con Supabase.
 const SUPABASE_URL = 'https://bzjsniaecbccgxaeoedc.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ZAq7GYD2M8nn8S0z4j6QaA_gRWrhG7w';
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
@@ -195,6 +195,13 @@ function positionAgeText(iso){
   const h=Math.round(min/60);
   return `hace ${h} h`;
 }
+function memberColor(userId){
+  const palette=['#f5cf35','#2f80ed','#e05252','#31a36b','#9b59b6','#f2994a','#00a6a6','#e85aad'];
+  const text=String(userId||'');
+  let hash=0;
+  for(let i=0;i<text.length;i++) hash=((hash<<5)-hash)+text.charCodeAt(i)|0;
+  return palette[Math.abs(hash)%palette.length];
+}
 function memberStatus(p){
   if(!p) return {text:'Sin posición',cls:'none'};
   if(!p.sharing_enabled) return {text:'Ubicación parada',cls:'off'};
@@ -217,7 +224,7 @@ function renderGroup(message=''){
   const membersHtml=groupState.members.map(m=>{
     const p=positions.find(x=>x.user_id===m.userId);
     const st=memberStatus(p);
-    return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong>${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
+    const color=memberColor(m.userId); return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar" style="--member-color:${color}">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong class="member-name-label" style="--member-color:${color}">${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
   }).join('');
   box.innerHTML=`
     <div class="panel"><div class="row"><div><div class="small">TU NOMBRE</div><strong>${escapeHtml(groupState.alias)}</strong></div><span class="status ${groupState.sharing?'ok':'warn'}">${groupState.sharing?'Ubicación activa':'Ubicación parada'}</span></div></div>
@@ -296,10 +303,10 @@ function initMap(){
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
   window._map=map;
 }
-function markerIcon(isMe){return L.divIcon({className:'ultreia-marker',html:`<div class="marker-pin ${isMe?'me':''}">${isMe?'●':'👤'}</div>`,iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-16]})}
+function markerIcon(userId,isMe=false){const color=memberColor(userId);return L.divIcon({className:'ultreia-marker',html:`<div class="marker-pin ${isMe?'me':''}" style="--member-color:${color}">${isMe?'●':'👤'}</div>`,iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-16]})}
 function drawOwn(p,center=true){
   initMap();
-  if(!userMarker){userMarker=L.marker([p.latitude,p.longitude],{icon:markerIcon(true)}).addTo(map).bindPopup(`<strong>${escapeHtml(groupState.alias||'Yo')}</strong><br>Mi posición`)}else userMarker.setLatLng([p.latitude,p.longitude]);
+  if(!userMarker){userMarker=L.marker([p.latitude,p.longitude],{icon:markerIcon(groupState.userId,true)}).addTo(map).bindPopup(`<strong>${escapeHtml(groupState.alias||'Yo')}</strong><br>Mi posición`)}else userMarker.setLatLng([p.latitude,p.longitude]);
   if(center) map.setView([p.latitude,p.longitude],16);
   renderGroupMarkers();
 }
@@ -314,7 +321,7 @@ function renderGroupMarkers(){
     wanted.add(p.user_id);
     const label=escapeHtml(member.alias||'Peregrino');
     let marker=groupMarkers.get(p.user_id);
-    if(!marker){marker=L.marker([p.latitude,p.longitude],{icon:markerIcon(false)}).addTo(map);groupMarkers.set(p.user_id,marker)}else marker.setLatLng([p.latitude,p.longitude]);
+    if(!marker){marker=L.marker([p.latitude,p.longitude],{icon:markerIcon(p.user_id,false)}).addTo(map);groupMarkers.set(p.user_id,marker)}else { marker.setLatLng([p.latitude,p.longitude]); marker.setIcon(markerIcon(p.user_id,false)); }
     const st=memberStatus(p);
     marker.bindPopup(`<strong>${label}</strong><br>${st.text}<br><span class="small">${new Date(p.recorded_at).toLocaleTimeString('es-ES')}</span>`);
   });
