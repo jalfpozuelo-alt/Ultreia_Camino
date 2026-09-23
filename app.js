@@ -13,10 +13,11 @@ function showView(id){
   try{sessionStorage.setItem('ultreia-last-view',id)}catch{}
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  if(id===GROUP){ renderGroup(); setTimeout(()=>{ if(window._map) window._map.invalidateSize(); },150); }
+  if(id===GROUP){
+    renderGroup();
+    setTimeout(()=>{ if(window._map) window._map.invalidateSize(); },150);
+  }
   if(id===EXP) renderExpense();
-// Si ya perteneces a un grupo, al volver a abrir la PWA retomamos directamente el seguimiento.
-if(groupState.group){ showView(GROUP); initGroup(); }
 }
 document.getElementById('goExpenses').onclick=()=>showView(EXP);
 document.getElementById('goGroup').onclick=async()=>{showView(GROUP); await initGroup();};
@@ -53,7 +54,7 @@ document.getElementById('newExpenseBtn').onclick=()=>{if(!state.plan.start||!sta
 // ---------------- Seguimiento de Grupo — Supabase real ----------------
 const GROUP_KEY='ultreia-group-web-v3';
 let groupState=loadGroup();
-let map=null,userMarker=null,groupMarkers=new Map(),watchId=null,realtimeChannel=null,groupInitialized=false;
+let map=null,userMarker=null,groupMarkers=new Map(),watchId=null,realtimeChannel=null,groupInitialized=false,groupRefreshTimer=null;
 function loadGroup(){try{return JSON.parse(localStorage.getItem(GROUP_KEY)||'{}')}catch{return {}}}
 function saveGroup(){localStorage.setItem(GROUP_KEY,JSON.stringify(groupState))}
 function localAlias(){return groupState.alias||''}
@@ -61,7 +62,11 @@ function ensureGroupDefaults(){groupState={alias:groupState.alias||'',sharing:fa
 ensureGroupDefaults();
 
 async function initGroup(){
-  if(groupInitialized){ renderGroup(); return; }
+  if(groupInitialized){
+    renderGroup();
+    startGroupRefresh();
+    return;
+  }
   groupInitialized=true;
   renderGroup('Cargando…');
   try{
@@ -69,10 +74,38 @@ async function initGroup(){
     if(!session){const {error}=await supabase.auth.signInAnonymously();if(error)throw error;}
     await ensureProfile();
     await loadGroupFromSupabase();
+    startGroupRefresh();
   }catch(error){
     console.error(error);
     renderGroup('No se ha podido conectar. Comprueba la conexión a Internet e inténtalo de nuevo.');
   }
+}
+function startGroupRefresh(){
+  if(groupRefreshTimer) return;
+  groupRefreshTimer=setInterval(async()=>{
+    if(currentView!==GROUP || !groupState.group || document.visibilityState==='hidden') return;
+    try{ await refreshGroupDataOnly(); }catch(error){ console.debug('Actualización de grupo:',error); }
+  },4000);
+}
+async function refreshGroupDataOnly(){
+  if(!groupState.group || !groupState.userId) return;
+  const groupId=groupState.group.id;
+  const [g,m,p]=await Promise.all([
+    supabase.from('groups').select('id,name,invite_code,invite_expires_at,created_by,created_at').eq('id',groupId).single(),
+    supabase.from('group_members').select('user_id,role,joined_at,profiles!group_members_user_id_fkey(alias)').eq('group_id',groupId).order('joined_at'),
+    supabase.from('group_locations').select().eq('group_id',groupId)
+  ]);
+  if(g.error)throw g.error;if(m.error)throw m.error;if(p.error)throw p.error;
+  groupState.group=g.data;
+  const previousMembers=JSON.stringify(groupState.members||[]);
+  groupState.members=(m.data||[]).map(row=>({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at}));
+  groupState.positions=p.data||[];
+  const me=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);
+  groupState.sharing=!!me?.sharing_enabled;
+  saveGroup();
+  if(previousMembers!==JSON.stringify(groupState.members||[])) renderGroup();
+  renderGroupMarkers();
+  updateMapCard();
 }
 async function ensureProfile(){
   const {data:{user},error:authError}=await supabase.auth.getUser();
@@ -146,9 +179,9 @@ async function connectRealtime(groupId){
     .on('broadcast',{event:'location'},payload=>{
       const data=payload.payload||payload;
       if(!data?.user_id||data.group_id!==groupId||data.user_id===groupState.userId)return;
-      upsertLocalPosition(data);renderGroupMarkers();renderGroup(false);
+      upsertLocalPosition(data);renderGroupMarkers();updateMapCard();
     })
-    .subscribe(status=>{groupState.realtimeConnected=status==='SUBSCRIBED';saveGroup();});
+    .subscribe(status=>{groupState.realtimeConnected=status==='SUBSCRIBED';saveGroup();updateMapCard();});
 }
 async function stopRealtime(){if(realtimeChannel){await supabase.removeChannel(realtimeChannel);realtimeChannel=null}groupState.realtimeConnected=false}
 function upsertLocalPosition(pos){const arr=groupState.positions||[];const i=arr.findIndex(x=>x.user_id===pos.user_id);if(i<0)arr.push(pos);else arr[i]=pos;groupState.positions=arr;saveGroup()}
