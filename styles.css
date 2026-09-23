@@ -39,3 +39,6 @@ html,body{height:100%;overflow:hidden}body{padding-bottom:0}.phone{height:100dvh
 @media(max-height:700px){.no-scroll-home{padding-top:10px;padding-bottom:10px}.no-scroll-home h2{margin-bottom:14px;font-size:27px}.no-scroll-home .module-card{padding:15px 17px;margin-bottom:10px}.no-scroll-home .module-icon{font-size:29px}.no-scroll-home .module-card p{margin-bottom:10px}.no-scroll-home .module-card button{padding:14px}}
 
 .appbar .app-version{margin-left:auto;font-size:10px;font-weight:900;letter-spacing:1px;color:#ffffffaa;border:1px solid #ffffff33;border-radius:999px;padding:4px 7px}.member-name-label{display:inline-block;padding:3px 8px;border-radius:999px;color:#123b6d!important;line-height:1.2}.member-list{max-height:52vh;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px}
+
+/* V9 */
+.home-version{position:absolute;right:14px;bottom:10px;font-size:10px;font-weight:700;letter-spacing:.8px;color:#aeb7c1;opacity:.72;pointer-events:none}.home-brand{line-height:1}.member-name-label{color:#123b6d!important}.member-name-label[style]{color:#123b6d!important}.marker-pin{background:var(--member-color,#123b6d)!important}.marker-pin.me{background:var(--member-color,#123b6d)!important;color:#123b6d}.map-actions{justify-content:flex-end}.route-panel{display:none}
