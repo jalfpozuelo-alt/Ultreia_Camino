@@ -1,4 +1,4 @@
-# Ultreia Camino Web V1
+# Ultreia Camino Web
 Aplicación web móvil/PWA para iPhone con dos módulos: Control de Gastos y Seguimiento de Grupo.
 
 ## V1
