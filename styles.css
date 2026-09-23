@@ -30,3 +30,10 @@ html,body{height:100%;overflow:hidden}body{padding-bottom:0}.phone{height:100dvh
 .category-modal-row{border:0!important;border-bottom:0!important;box-shadow:none!important;outline:none!important;-webkit-appearance:none;appearance:none}.category-modal-row:focus,.category-modal-row:focus-visible{outline:none!important;box-shadow:none!important;border-bottom:0!important}
 
 .header-actions{margin-left:auto;display:flex;align-items:center;gap:2px}.home-brand{font-size:25px!important;letter-spacing:2.5px}.choice-stack{display:grid;gap:10px}.choice-btn{width:100%;min-height:54px;font-size:16px}
+
+/* V3 */
+.no-scroll-home{overflow:hidden!important;display:flex;flex-direction:column;justify-content:center;min-height:0}
+.no-scroll-home .hub-title{flex:0 0 auto}.no-scroll-home h2{flex:0 0 auto}.no-scroll-home .module-card{flex:0 0 auto}
+.member-info{min-width:0}.group-actions{margin-top:12px}.admin-actions{margin-top:9px}.invite-label{color:#fff9!important}.ultreia-marker{background:transparent;border:0}.marker-pin{width:34px;height:34px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#123b6d;color:#ffd84d;display:grid;place-items:center;font-size:17px;border:3px solid #fff;box-shadow:0 2px 8px #0005}.marker-pin>*{transform:rotate(45deg)}.marker-pin.me{background:#ffd84d;color:#123b6d}.marker-pin.me::first-letter{transform:rotate(45deg)}
+.group-body{overflow-y:auto;-webkit-overflow-scrolling:touch}.choice-btn{min-height:56px}
+@media(max-height:700px){.no-scroll-home{padding-top:10px;padding-bottom:10px}.no-scroll-home h2{margin-bottom:14px;font-size:27px}.no-scroll-home .module-card{padding:15px 17px;margin-bottom:10px}.no-scroll-home .module-icon{font-size:29px}.no-scroll-home .module-card p{margin-bottom:10px}.no-scroll-home .module-card button{padding:14px}}
