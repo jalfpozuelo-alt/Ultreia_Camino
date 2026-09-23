@@ -28,3 +28,5 @@ html,body{height:100%;overflow:hidden}body{padding-bottom:0}.phone{height:100dvh
 
 /* V7: category rows are visually clean; no focus/bottom line */
 .category-modal-row{border:0!important;border-bottom:0!important;box-shadow:none!important;outline:none!important;-webkit-appearance:none;appearance:none}.category-modal-row:focus,.category-modal-row:focus-visible{outline:none!important;box-shadow:none!important;border-bottom:0!important}
+
+.header-actions{margin-left:auto;display:flex;align-items:center;gap:2px}.home-brand{font-size:25px!important;letter-spacing:2.5px}.choice-stack{display:grid;gap:10px}.choice-btn{width:100%;min-height:54px;font-size:16px}
