@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-// Ultreia Camino Web V6 — Control de Gastos + Seguimiento de Grupo real con Supabase.
+// Ultreia Camino Web V7 — Control de Gastos + Seguimiento de Grupo real con Supabase.
 const SUPABASE_URL = 'https://bzjsniaecbccgxaeoedc.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ZAq7GYD2M8nn8S0z4j6QaA_gRWrhG7w';
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
@@ -85,7 +85,7 @@ function startGroupRefresh(){
   groupRefreshTimer=setInterval(async()=>{
     if(currentView!==GROUP || !groupState.group || document.visibilityState==='hidden') return;
     try{ await refreshGroupDataOnly(); }catch(error){ console.debug('Actualización de grupo:',error); }
-  },4000);
+  },3000);
 }
 async function refreshGroupDataOnly(){
   if(!groupState.group || !groupState.userId) return;
@@ -97,13 +97,14 @@ async function refreshGroupDataOnly(){
   ]);
   if(g.error)throw g.error;if(m.error)throw m.error;if(p.error)throw p.error;
   groupState.group=g.data;
-  const previousMembers=JSON.stringify(groupState.members||[]);
+  const previousSnapshot=JSON.stringify({group:groupState.group,members:groupState.members||[],positions:groupState.positions||[],sharing:groupState.sharing});
   groupState.members=(m.data||[]).map(row=>({userId:row.user_id,alias:row.profiles?.alias||'Peregrino',role:row.role,joinedAt:row.joined_at}));
   groupState.positions=p.data||[];
   const me=(groupState.positions||[]).find(x=>x.user_id===groupState.userId);
   groupState.sharing=!!me?.sharing_enabled;
   saveGroup();
-  if(previousMembers!==JSON.stringify(groupState.members||[])) renderGroup();
+  const nextSnapshot=JSON.stringify({group:groupState.group,members:groupState.members||[],positions:groupState.positions||[],sharing:groupState.sharing});
+  if(previousSnapshot!==nextSnapshot) renderGroup();
   renderGroupMarkers();
   updateMapCard();
 }
@@ -195,12 +196,12 @@ function positionAgeText(iso){
   const h=Math.round(min/60);
   return `hace ${h} h`;
 }
+const MEMBER_COLORS=['#f5cf35','#2f80ed','#e05252','#31a36b','#9b59b6','#f2994a','#00a6a6','#e85aad'];
 function memberColor(userId){
-  const palette=['#f5cf35','#2f80ed','#e05252','#31a36b','#9b59b6','#f2994a','#00a6a6','#e85aad'];
   const text=String(userId||'');
-  let hash=0;
-  for(let i=0;i<text.length;i++) hash=((hash<<5)-hash)+text.charCodeAt(i)|0;
-  return palette[Math.abs(hash)%palette.length];
+  let hash=2166136261;
+  for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  return MEMBER_COLORS[(hash>>>0)%MEMBER_COLORS.length];
 }
 function memberStatus(p){
   if(!p) return {text:'Sin posición',cls:'none'};
@@ -224,14 +225,13 @@ function renderGroup(message=''){
   const membersHtml=groupState.members.map(m=>{
     const p=positions.find(x=>x.user_id===m.userId);
     const st=memberStatus(p);
-    const color=memberColor(m.userId); return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar" style="--member-color:${color}">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong class="member-name-label" style="--member-color:${color}">${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
+    const color=memberColor(m.userId); return `<button type="button" class="member member-button" data-member-id="${escapeHtml(m.userId)}"><div class="avatar" style="--member-color:${color};background:${color}">${escapeHtml((m.alias||'?')[0].toUpperCase())}</div><div class="member-info"><strong class="member-name-label" style="--member-color:${color};background:${color}">${escapeHtml(m.alias)}${m.userId===groupState.userId?' (tú)':''}</strong><div class="small member-status ${st.cls}"><span class="status-dot"></span>${st.text}</div></div><span class="member-arrow">›</span></button>`;
   }).join('');
   box.innerHTML=`
     <div class="panel"><div class="row"><div><div class="small">TU NOMBRE</div><strong>${escapeHtml(groupState.alias)}</strong></div><span class="status ${groupState.sharing?'ok':'warn'}">${groupState.sharing?'Ubicación activa':'Ubicación parada'}</span></div></div>
-    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong><div class="invite-actions"><button type="button" class="invite-btn" id="copyInvite">Copiar</button><button type="button" class="invite-btn" id="shareInvite">Compartir</button></div></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button><button class="secondary" id="openMapFromGroup">🗺️ Ver mapa</button></div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
+    <div class="panel"><div class="small">GRUPO</div><h3>${escapeHtml(groupState.group.name)}</h3><div class="group-code"><div class="small invite-label">CÓDIGO DE INVITACIÓN</div><strong>${escapeHtml(groupState.group.invite_code)}</strong><div class="invite-actions"><button type="button" class="invite-btn" id="copyInvite">Copiar</button><button type="button" class="invite-btn" id="shareInvite">Compartir</button></div></div><div class="row group-actions"><button class="primary" id="shareToggle">${groupState.sharing?'Detener ubicación':'Compartir ubicación'}</button></div>${admin?`<div class="row admin-actions"><button class="secondary" id="regenerateInvite">Nuevo código</button><button class="danger" id="leaveGroup">Salir del grupo</button></div>`:`<div class="row admin-actions"><button class="danger" id="leaveGroup">Salir del grupo</button></div>`}</div>
     <div class="panel"><div class="row"><h3 style="margin:0;flex:1">Compañeros</h3><span class="small">${groupState.members.length} ${groupState.members.length===1?'persona':'personas'}</span></div><div class="member-list">${membersHtml||'<div class="small">Todavía no hay compañeros.</div>'}</div></div>`;
   document.getElementById('shareToggle').onclick=()=>toggleSharing();
-  document.getElementById('openMapFromGroup').onclick=showMap;
   document.getElementById('leaveGroup').onclick=async()=>{if(confirm('¿Quieres salir de este grupo?'))await safeAction(leaveGroup)};
   document.getElementById('regenerateInvite')?.addEventListener('click',()=>safeAction(regenerateInvite));
   document.getElementById('copyInvite').onclick=()=>copyInviteCode();
